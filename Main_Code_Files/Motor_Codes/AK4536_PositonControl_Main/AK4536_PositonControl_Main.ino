@@ -1,14 +1,11 @@
-// CubeMars AK10-9 MIT Mode Control - Portenta H7
-// CORRECT FIX: pack_cmd() must always be followed by reading the reply
+// CubeMars AK45-36 MIT Mode Control with Portenta H7 on CAN1
 
+
+// Libraries Required
 #include <mbed.h>
 #include "Arduino_PowerManagement.h"
 
-/*********************************************************************************************************
-  DEFINITION SECTION
-*********************************************************************************************************/
-
-// CAN Bus Setup
+// CAN Bus Setup (pins and rate)
 mbed::CAN can1(PB_8, PH_13, 1000000);
 
 // LED Pins
@@ -16,11 +13,11 @@ mbed::CAN can1(PB_8, PH_13, 1000000);
 #define LED_GREEN LEDG
 #define LED_BLUE  LEDB
 
-// Motor Configuration
+// Motor Configuration (set from cubemars app)
 #define MOTOR_ID 2
 const unsigned long CAN_ID = MOTOR_ID;
 
-// VALUE LIMITS (for AK10-9)
+// Value Limits (from datasheet for AK series)
 #define P_MIN -12.5f
 #define P_MAX 12.5f
 #define V_MIN -50.0f
@@ -32,14 +29,14 @@ const unsigned long CAN_ID = MOTOR_ID;
 #define T_MIN -65.0f
 #define T_MAX 65.0f
 
-// SET VALUES
+// Set Value Params
 float p_in = 0.0f;
 float v_in = 0.0f;
 float kp_in = 10.0f;
 float kd_in = 1.0f;
 float t_in = 0.0f;
 
-// MEASURED VALUES
+// Measured Value Params
 float p_out = 0.0f;
 float v_out = 0.0f;
 float t_out = 0.0f;
@@ -48,9 +45,11 @@ float t_out = 0.0f;
 uint32_t lastSendTime    = 0;
 uint32_t lastReceiveTime = 0;
 
+
 /*********************************************************************************************************
-  CONVERSION SECTION - UNCHANGED
+  CONVERSION FUNCTIONS
 *********************************************************************************************************/
+
 
 unsigned int float_to_uint(float x, float x_min, float x_max, int bits) {
   float span = x_max - x_min;
@@ -78,9 +77,11 @@ float uint_to_float(unsigned int x_int, float x_min, float x_max, int bits) {
   return pgg;
 }
 
+
 /*********************************************************************************************************
-  CAN COMMUNICATION SECTION - UNCHANGED
+  CAN COMMUNICATION SECTION 
 *********************************************************************************************************/
+
 
 void unpack_reply(uint8_t* dat, uint8_t len) {
   if (len != 6) return;
@@ -132,9 +133,11 @@ void pack_cmd() {
   can1.write(msg);
 }
 
+
 /*********************************************************************************************************
-  MOTOR MODE SECTION - UNCHANGED
+  MOTOR MODE SECTION 
 *********************************************************************************************************/
+
 
 bool EnterMotorMode() {
   mbed::CANMessage msg;
@@ -190,22 +193,12 @@ void Zero() {
   }
 }
 
-/*********************************************************************************************************
-  MOVE HELPER
-  Mirrors exactly what your working setup() did:
-    1. Set p_in
-    2. pack_cmd()        <- send command
-    3. delay(10)         <- give motor time to respond  
-    4. read reply        <- THIS is what completes the transaction
-    5. delay remainder   <- wait at position
-  
-  The reply read after pack_cmd() is what was missing from the loop.
-*********************************************************************************************************/
+
+// #############
 
 void moveTo(float target_pos, uint32_t dwell_ms) {
   p_in = target_pos;
 
-  // Mirror exactly what EnterMotorMode() did when it worked:
   // send command, wait briefly, then READ THE REPLY
   pack_cmd();
   delay(5);
@@ -227,8 +220,13 @@ void moveTo(float target_pos, uint32_t dwell_ms) {
 
 Board board;
 
+
+// #####################
+
+
 void setup() {
 
+  // For 3.3V pin outputs
   board.begin();
   board.setExternalVoltage(3.3);
 
@@ -258,7 +256,14 @@ void setup() {
   delay(2000);
 }
 
+
+
+// ############################
+// MAIN LOOP
+
+
 void loop() {
+
   // Sweep forward 0.0 -> 1.57 rad in 0.005 steps
   for (float pos = 0.0f; pos <= 1.570f; pos += 0.005f) {
     moveTo(pos, 10);
@@ -268,7 +273,9 @@ void loop() {
   for (float pos = 1.570f; pos >= 0.0f; pos -= 0.005f) {
     moveTo(pos, 10);
   }
+  
 }
+
 
 /*********************************************************************************************************
   END FILE

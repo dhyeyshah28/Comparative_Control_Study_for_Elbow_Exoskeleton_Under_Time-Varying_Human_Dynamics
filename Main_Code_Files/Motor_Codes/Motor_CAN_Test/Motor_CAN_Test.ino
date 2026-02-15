@@ -1,4 +1,4 @@
-// CubeMars AK10-9 MIT Mode Control - Portenta H7
+// Motor CAN Test - Working Ver.
 
 
 #include <mbed.h>
@@ -20,7 +20,7 @@ mbed::CAN can1(PB_8, PH_13, 1000000);
 #define MOTOR_ID 2
 const unsigned long CAN_ID = MOTOR_ID;
 
-// VALUE LIMITS (for AK10-9)
+// VALUE LIMITS 
 #define P_MIN -12.5f
 #define P_MAX 12.5f
 #define V_MIN -50.0f
@@ -35,8 +35,8 @@ const unsigned long CAN_ID = MOTOR_ID;
 // SET VALUES
 float p_in = 0.0f;
 float v_in = 0.0f;
-float kp_in = 5.0f;  // HIGHER gain - motor will respond more aggressively
-float kd_in = 1.0f;    // MAXIMUM damping for stability
+float kp_in = 5.0f;  
+float kd_in = 1.0f;    
 float t_in = 0.0f;
 
 // MEASURED VALUES
@@ -48,7 +48,7 @@ float t_out = 0.0f;
 bool motor_enabled = false;
 bool going_to_target = true;
 uint32_t lastSwitchTime = 0;
-uint32_t DWELL_TIME = 2000;  // Switch every 2 seconds
+uint32_t DWELL_TIME = 2000;  
 
 // Timing
 uint32_t lastSendTime = 0;
@@ -207,7 +207,7 @@ void Zero() {
   
   can1.write(msg);
   
-  // CRITICAL: Send position commands immediately after zeroing
+  // Send position commands immediately after zeroing
   for (int i = 0; i < 5; i++) {
     delay(10);
     pack_cmd();
