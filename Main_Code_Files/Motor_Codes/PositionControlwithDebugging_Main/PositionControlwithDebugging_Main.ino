@@ -7,6 +7,10 @@
 // CAN Bus Setup (pins and rate)
 mbed::CAN can1(PB_8, PH_13, 1000000);
 
+// UART0 Debug Setup on Breakout UART0 pins
+// UART0_TX = PA0, UART0_RX = PI9 from Portenta Breakout schematic
+mbed::UnbufferedSerial debug_uart(PA_0, PI_9, 115200);
+
 // LED Pins
 #define LED_RED   LEDR
 #define LED_GREEN LEDG
@@ -43,6 +47,63 @@ float t_out = 0.0f;
 // Timing
 uint32_t lastReceiveTime = 0;
 
+// UART0 Debug Timing
+uint32_t lastDebugTime = 0;
+
+/*********************************************************************************************************
+  UART0 DEBUG SECTION
+*********************************************************************************************************/
+
+void debugPrint(const char* msg) {
+  debug_uart.write(msg, strlen(msg));
+}
+
+void debugPrintln(const char* msg) {
+  debug_uart.write(msg, strlen(msg));
+  debug_uart.write("\r\n", 2);
+}
+
+void debugMotorFeedback(uint32_t rx_id, uint8_t* dat, uint8_t len) {
+  char line[256];
+
+  snprintf(line, sizeof(line),
+           "[MOTOR FEEDBACK] CAN_ID=%lu RX_ID=%lu LEN=%u | "
+           "Motor_ID_byte=%u | "
+           "p_out=%.4f rad | v_out=%.4f rad/s | t_out=%.4f Nm | "
+           "p_cmd=%.4f rad | v_cmd=%.4f rad/s | kp=%.2f | kd=%.2f | "
+           "raw=[%02X %02X %02X %02X %02X %02X]",
+           CAN_ID,
+           rx_id,
+           len,
+           dat[0],
+           p_out,
+           v_out,
+           t_out,
+           p_in,
+           v_in,
+           kp_in,
+           kd_in,
+           dat[0], dat[1], dat[2], dat[3], dat[4], dat[5]);
+
+  debugPrintln(line);
+}
+
+void debugStatusNoFeedback() {
+  char line[180];
+
+  snprintf(line, sizeof(line),
+           "[NO RECENT FEEDBACK] last_rx_age=%lu ms | "
+           "p_cmd=%.4f rad | v_cmd=%.4f rad/s | p_out=%.4f rad | v_out=%.4f rad/s | t_out=%.4f Nm",
+           millis() - lastReceiveTime,
+           p_in,
+           v_in,
+           p_out,
+           v_out,
+           t_out);
+
+  debugPrintln(line);
+}
+
 /*********************************************************************************************************
   CONVERSION FUNCTIONS
 *********************************************************************************************************/
@@ -78,7 +139,7 @@ float uint_to_float(unsigned int x_int, float x_min, float x_max, int bits) {
 *********************************************************************************************************/
 
 void unpack_reply(uint8_t* dat, uint8_t len) {
-  if (len != 6) return;
+  if (len < 6) return;
 
   unsigned int p_int = (dat[1] << 8) | dat[2];
   unsigned int v_int = (dat[3] << 4) | (dat[4] >> 4);
@@ -175,6 +236,17 @@ Board board;
 
 void setup() {
 
+  
+  // UART0 Debug Start
+  delay(500);
+  debug_uart.format(8, mbed::SerialBase::None, 1);
+
+  debugPrintln("========================================");
+  debugPrintln("Portenta H7 UART0 Debug Started");
+  debugPrintln("UART0 TX = PA0, UART0 RX = PI9");
+  debugPrintln("Baud = 115200");
+  debugPrintln("========================================");
+
   // For 3.3V pin outputs
   board.begin();
   board.setExternalVoltage(3.3);
@@ -189,16 +261,27 @@ void setup() {
   can1.mode(mbed::CAN::Mode::Normal);
   delay(3000);
 
+  debugPrintln("[SETUP] CAN1 normal mode set at 1 Mbps");
+
   // Zero, then enable ONCE
   p_in = 0.0f;
+  debugPrintln("[SETUP] Sending zero command...");
   Zero();
   delay(1000);
-  EnterMotorMode();
+
+  debugPrintln("[SETUP] Entering motor mode...");
+  if (EnterMotorMode()) {
+    debugPrintln("[SETUP] EnterMotorMode CAN command sent successfully");
+  } else {
+    debugPrintln("[SETUP ERROR] EnterMotorMode CAN write failed");
+  }
   delay(1000);
 
   digitalWrite(LED_GREEN, LOW);
   digitalWrite(LED_BLUE,  LOW);
   digitalWrite(LED_RED,   LOW);
+
+  debugPrintln("[SETUP] Setup complete. Starting 1kHz position control.");
 }
 
 // ############################
@@ -210,9 +293,32 @@ void loop() {
   // 1. Unpack incoming CAN messages without blocking (Continuous)
   mbed::CANMessage msgIn;
   if (can1.read(msgIn, 0)) {
-    if (msgIn.id == CAN_ID && msgIn.len == 6) {
+
+    char rawLine[220];
+
+    snprintf(rawLine, sizeof(rawLine),
+            "[RAW CAN RX] id=%lu len=%u data=[%02X %02X %02X %02X %02X %02X %02X %02X]",
+            msgIn.id,
+            msgIn.len,
+            msgIn.data[0], msgIn.data[1], msgIn.data[2], msgIn.data[3],
+            msgIn.data[4], msgIn.data[5], msgIn.data[6], msgIn.data[7]);
+
+    //debugPrintln(rawLine);
+
+    if (msgIn.id == CAN_ID && (msgIn.len == 6 || msgIn.len == 8)) {
       unpack_reply(msgIn.data, msgIn.len);
+
+      if (millis() - lastDebugTime >= 100) {
+        lastDebugTime = millis();
+        debugMotorFeedback(msgIn.id, msgIn.data, msgIn.len);
+      }
     }
+  }
+
+  // Print warning if no feedback received recently
+  if ((millis() - lastDebugTime >= 500) && (millis() - lastReceiveTime > 500)) {
+    lastDebugTime = millis();
+    debugStatusNoFeedback();
   }
   
   // 2. 1 kHz (1000 microsecond) Timer Gate
@@ -223,22 +329,37 @@ void loop() {
   if (now - lastTime < period_us) return;
   lastTime += period_us;
 
-  // 3. Trajectory Generation Variables
+  // 3. Feedback-driven trajectory generation
   static float current_pos = 0.0f;
-  static float sweep_speed = 0.25f; // rad/s
-  static int sweep_dir = 1;         // 1 for forward, -1 for reverse
+  static float sweep_speed = 0.25f;   // rad/s
+  static int sweep_dir = 1;
 
-  // Calculate new position step (0.25 rad/s * 0.001 s = 0.00025 rad)
-  current_pos += sweep_dir * sweep_speed * 0.001f;
+  const float P_LOW  = 0.0f;
+  const float P_HIGH = 1.570f;
 
-  // Boundary checks to reverse direction automatically
-  if (current_pos >= 1.570f) {
-    current_pos = 1.570f;
-    sweep_dir = -1; 
-  } else if (current_pos <= 0.0f) {
-    current_pos = 0.0f;
-    sweep_dir = 1;  
+  // max allowed tracking error before pausing trajectory advance
+  const float TRACK_ERR_LIMIT = 0.035f;   // rad, about 2 deg
+
+  float tracking_err = fabsf(current_pos - p_out);
+
+
+  // Only advance command if motor is actually keeping up
+  if (lastReceiveTime > 0 && tracking_err < TRACK_ERR_LIMIT) {
+    current_pos += sweep_dir * sweep_speed * 0.001f;
   }
+
+  // Reverse based on ACTUAL feedback, not just command
+  if (sweep_dir == 1 && p_out >= P_HIGH - TRACK_ERR_LIMIT) {
+    current_pos = P_HIGH;
+    sweep_dir = -1;
+  }
+  else if (sweep_dir == -1 && p_out <= P_LOW + TRACK_ERR_LIMIT) {
+    current_pos = P_LOW;
+    sweep_dir = 1;
+  }
+
+  // Safety clamp
+  current_pos = constrain(current_pos, P_LOW, P_HIGH);
 
   // 4. Update MIT parameters for POSITION CONTROL
   p_in = current_pos;
@@ -247,9 +368,9 @@ void loop() {
   v_in = sweep_dir * sweep_speed;
   
   // High gains for stiff position control
-  kp_in = 40.0f;  // 20x stiffer than impedance mode
-  kd_in = 3.0f;    // Damping scaled proportionally
-  t_in = 0.0f;     // No feedforward torque needed
+  kp_in = 14.0f;  // 20x stiffer than impedance mode
+  kd_in = 1.5f;    // Damping scaled proportionally
+  t_in = 0.1f;     // No feedforward torque needed
 
   // 5. Send command to motor
   pack_cmd();
